@@ -21,6 +21,7 @@ import qualified Luna.Pass.UnitCompilation.RecordProcessing as RecordProcessing
 
 import           Data.Map (Map)
 import qualified Data.Map as Map
+import qualified Data.Map.Lazy.Merge as Map
 import qualified Data.Set as Set
 import Luna.Pass.Evaluation.Interpreter
 import Luna.Pass.Typechecking.Typecheck
@@ -53,10 +54,37 @@ type instance Pass.Preserves        MethodProcessing = '[]
 
 processMethods :: (MonadPassManager m, MonadIO m, Dep.MonadState Cache m) => Name -> Imports -> Name -> [Name] -> [Name] -> [(Name, Maybe Text32, Rooted SomeExpr)] -> m (Map Name (WithDocumentation (Either [CompileError] Function)))
 processMethods modName imps className classParamNames consNames methodIRs = mdo
-    result <- forM methodIRs $ \(n, doc, body) -> fmap (WithDocumentation doc) $ liftIO $ delay $ mkMethod modName allImports className classParamNames n body
-    let meths      = zip (view _1 <$> methodIRs) result
+    result     <- liftIO $ forM methodIRs $ \(n, doc, body) ->
+        fmap (WithDocumentation doc) $ delay $
+            mkMethod modName allImports className classParamNames n body
+    let duplicates = checkUniqueness $ map (view _1) methodIRs
+        meths      = zip (view _1 <$> methodIRs) result
         allImports = imps & importedClasses . ix className . documentedItem . Class.methods %~ Map.union (Map.fromList meths)
-    return $ Map.fromList meths
+        resultMap  = Map.fromList meths
+    case duplicates of
+        Nothing               -> return resultMap
+        Just duplicateMethods -> do
+            let errorText n   = "Method " <> convert n <> " of "
+                             <> convert className <> " class, "
+                             <> "defined in module " <> convert modName
+                             <> " has multiple definitions."
+                methodError n = Left $ [CompileError (errorText n) [] []]
+                errorsMap = Map.fromList
+                          $ map (\a -> (a, methodError a)) duplicateMethods
+            return $ Map.merge
+                        Map.preserveMissing
+                        Map.dropMissing
+                        (Map.zipWithMatched $
+                            \key (WithDocumentation doc _) error ->
+                                WithDocumentation doc error)
+                        resultMap
+                        errorsMap
+
+checkUniqueness :: [Name] -> Maybe [Name]
+checkUniqueness methodNames =
+    let multiset   = Map.fromListWith (+) $ map (,1) methodNames
+        duplicates = Map.filter (> 1) multiset
+    in if Map.null duplicates then Nothing else Just (Map.keys duplicates)
 
 mkMethod ::  Name -> Imports -> Name -> [Name] -> Name -> Rooted SomeExpr -> IO (Either [CompileError] Function)
 mkMethod modName imports className classParamNames methodName methodIR@(Rooted _ methodRoot) = fmap (\(Right x) -> x) $ runPM False $ do
