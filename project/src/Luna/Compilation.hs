@@ -77,6 +77,17 @@ data ModuleCompilationError = ModuleSourcesNotFound ModuleRequestStack QualName
                             | ImportsCycleError [QualName]
                             deriving (Show)
 
+instance Exception ModuleCompilationError where
+    displayException (ModuleSourcesNotFound stack mod) =
+        let moduleStack = if null stack
+                          then " "
+                          else " (requested in " <> show stack <> ") "
+        in "Module " <> convert mod <> moduleStack <>
+        "could not be read. Please ensure that the file exists and is readable."
+    displayException (ImportsCycleError cycle) =
+        "Modules " <> show cycle <> " form an import cycle. Luna does not " <>
+        "support cyclic modules imports."
+
 data CompiledModules = CompiledModules { _modules :: Map QualName Imports
                                        , _prims   :: Imports
                                        }
@@ -120,10 +131,7 @@ requestModules :: Map Name FilePath
                       (Map QualName Imports, CompiledModules)
                      )
 requestModules libs modules cached = do
-    res <- runEitherT $ flip runStateT cached $ requestModules' libs modules
-    case res of
-        Left err -> liftIO (print err >> IO.hFlush IO.stdout) >> return res
-        _        -> return res
+    runEitherT $ flip runStateT cached $ requestModules' libs modules
 
 requestModules' :: (MonadState CompiledModules m
                   , MonadError ModuleCompilationError m

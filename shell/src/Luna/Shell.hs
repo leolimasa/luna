@@ -238,7 +238,8 @@ shell opts = do
                     return (Bimap.elems allStd <> Bimap.elems allProj)
                 else
                     return []
-            Right (_, imp) <- Project.requestModules libs modsToCompile std
+            modules  <- Project.requestModules libs modsToCompile std
+            (_, imp) <- either throwM return modules
             when (opts ^. exhaustiveCompilation) $ forceCompilation imp
             let mainFun = imp ^? Project.modules
                                . ix [mainName, "Main"]
